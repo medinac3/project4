@@ -1,7 +1,3 @@
-/* main_server.c — CSC 345 Project 4, Checkpoint 1
- * Multi-user chat server with usernames, join/leave notifications,
- * and per-connection broadcast.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +16,7 @@ void error(const char *msg) {
     exit(1);
 }
 
-/* ── Client list ─────────────────────────────────────────────────── */
+// Clients 
 
 typedef struct _Client {
     int sockfd;
@@ -44,7 +40,7 @@ static void add_client(int sockfd, const char *username, const char *ip) {
     pthread_mutex_unlock(&list_mutex);
 }
 
-/* Remove by sockfd; copy username/ip out. Returns 1 if found. */
+// copy username/ip out. Returns 1 if found
 static int remove_client(int sockfd, char *out_user, char *out_ip) {
     pthread_mutex_lock(&list_mutex);
     Client *prev = NULL, *cur = client_list;
@@ -64,10 +60,7 @@ static int remove_client(int sockfd, char *out_user, char *out_ip) {
     pthread_mutex_unlock(&list_mutex);
     return 0;
 }
-
-/* ── Broadcast helpers ───────────────────────────────────────────── */
-
-/* Send to every connected client. Caller must NOT hold list_mutex. */
+// broadcasts to every connected client
 static void broadcast_all(const char *msg) {
     int len = strlen(msg);
     pthread_mutex_lock(&list_mutex);
@@ -76,7 +69,7 @@ static void broadcast_all(const char *msg) {
     pthread_mutex_unlock(&list_mutex);
 }
 
-/* Send to everyone except fromfd. */
+// Send to everyone except but one
 static void broadcast_others(int fromfd, const char *msg) {
     int len = strlen(msg);
     pthread_mutex_lock(&list_mutex);
@@ -86,7 +79,7 @@ static void broadcast_others(int fromfd, const char *msg) {
     pthread_mutex_unlock(&list_mutex);
 }
 
-/* Print connected clients to server terminal. */
+// prints connected clients to server
 static void print_client_list(void) {
     pthread_mutex_lock(&list_mutex);
     printf("── Connected clients ──\n");
@@ -99,8 +92,6 @@ static void print_client_list(void) {
     printf("──────────────────────\n");
     pthread_mutex_unlock(&list_mutex);
 }
-
-/* ── Per-client thread ───────────────────────────────────────────── */
 
 typedef struct {
     int clisockfd;
@@ -119,7 +110,7 @@ static void *thread_main(void *arg) {
     char buf[BUF_SIZE];
     int n;
 
-    /* First message = username */
+// sets first message as username and adds to list, broadcasts join message too
     memset(buf, 0, BUF_SIZE);
     n = recv(fd, buf, BUF_SIZE - 1, 0);
     if (n <= 0) { close(fd); return NULL; }
@@ -135,7 +126,7 @@ static void *thread_main(void *arg) {
     snprintf(notice, sizeof(notice), "%s (%s) joined the chat room!\n", username, ip);
     broadcast_all(notice);
 
-    /* Chat loop */
+// chat loop here
     while (1) {
         memset(buf, 0, BUF_SIZE);
         n = recv(fd, buf, BUF_SIZE - 1, 0);
@@ -148,7 +139,7 @@ static void *thread_main(void *arg) {
         broadcast_others(fd, msg);
     }
 
-    /* Disconnect */
+// disconnet message 
     char rm_user[64], rm_ip[INET_ADDRSTRLEN];
     remove_client(fd, rm_user, rm_ip);
 
@@ -159,8 +150,6 @@ static void *thread_main(void *arg) {
     close(fd);
     return NULL;
 }
-
-/* ── main ────────────────────────────────────────────────────────── */
 
 int main(void) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);

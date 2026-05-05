@@ -1,7 +1,3 @@
-/* main_client.c — CSC 345 Project 4, Checkpoint 1
- * Chat client with username, per-user ANSI color assignment,
- * and concurrent send/receive threads.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,9 +16,7 @@ void error(const char *msg) {
     exit(0);
 }
 
-/* ── Per-user color assignment ───────────────────────────────────── */
-
-/* ANSI foreground colors: red, green, yellow, blue, magenta, cyan   */
+// colors: red, green, yellow, blue, magenta, cyan
 #define MAX_COLORS 6
 static int ansi_colors[MAX_COLORS] = {31, 32, 33, 34, 35, 36};
 
@@ -32,7 +26,7 @@ static UserColor color_table[MAX_USERS];
 static int color_count = 0;
 static pthread_mutex_t color_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Returns assigned ANSI color code for username; assigns one on first sight. */
+// gives assigned color code for username; assigns one at intial encounter 
 static int get_color(const char *username) {
     pthread_mutex_lock(&color_mutex);
     for (int i = 0; i < color_count; i++) {
@@ -53,11 +47,9 @@ static int get_color(const char *username) {
     return color;
 }
 
-/* ── Threads ─────────────────────────────────────────────────────── */
-
 typedef struct { int sockfd; } ThreadArgs;
 
-/* Receive thread: display incoming messages, colorize chat messages. */
+// receives: display incoming messages, color chat messages
 static void *thread_main_recv(void *arg) {
     pthread_detach(pthread_self());
     int sockfd = ((ThreadArgs *)arg)->sockfd;
@@ -74,7 +66,6 @@ static void *thread_main_recv(void *arg) {
             break;
         }
 
-        /* Chat messages start with '[username (IP)]'; colorize them. */
         if (buf[0] == '[') {
             char *paren = strstr(buf, " (");
             if (paren) {
@@ -90,7 +81,7 @@ static void *thread_main_recv(void *arg) {
                 continue;
             }
         }
-        /* System messages (join/leave) printed plain. */
+// system messages (join/leave) printed
         printf("%s", buf);
         if (buf[strlen(buf) - 1] != '\n') printf("\n");
         fflush(stdout);
@@ -99,9 +90,8 @@ static void *thread_main_recv(void *arg) {
     return NULL;
 }
 
-/* Send thread: read stdin and forward to server. Empty line = disconnect. */
+// send thread: read stdin and forward to server
 static void *thread_main_send(void *arg) {
-    /* NOT detached — main() joins this thread. */
     int sockfd = ((ThreadArgs *)arg)->sockfd;
     free(arg);
 
@@ -111,7 +101,7 @@ static void *thread_main_send(void *arg) {
         if (fgets(buf, BUF_SIZE - 1, stdin) == NULL) break;
         buf[strcspn(buf, "\r\n")] = '\0';
 
-        if (strlen(buf) == 0) break; /* empty input → disconnect */
+        if (strlen(buf) == 0) break; /* empty input means disconnect */
 
         int n = send(sockfd, buf, strlen(buf), 0);
         if (n < 0) break;
@@ -119,8 +109,6 @@ static void *thread_main_send(void *arg) {
 
     return NULL;
 }
-
-/* ── main ────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
     if (argc < 2) error("Usage: ./main_client IP-address");
@@ -137,7 +125,7 @@ int main(int argc, char *argv[]) {
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         error("ERROR connecting");
 
-    /* Get and send username */
+// get and send username
     char username[64];
     printf("Type your user name: ");
     fflush(stdout);
@@ -147,7 +135,7 @@ int main(int argc, char *argv[]) {
     if (send(sockfd, username, strlen(username), 0) < 0)
         error("ERROR sending username");
 
-    /* Spawn receive thread (detached) */
+
     ThreadArgs *rargs = malloc(sizeof(ThreadArgs));
     if (!rargs) error("ERROR malloc");
     rargs->sockfd = sockfd;
@@ -155,7 +143,7 @@ int main(int argc, char *argv[]) {
     if (pthread_create(&rtid, NULL, thread_main_recv, rargs) != 0)
         error("ERROR creating recv thread");
 
-    /* Spawn send thread (joined below) */
+
     ThreadArgs *sargs = malloc(sizeof(ThreadArgs));
     if (!sargs) error("ERROR malloc");
     sargs->sockfd = sockfd;
@@ -163,7 +151,6 @@ int main(int argc, char *argv[]) {
     if (pthread_create(&stid, NULL, thread_main_send, sargs) != 0)
         error("ERROR creating send thread");
 
-    /* Wait for user to disconnect, then clean up */
     pthread_join(stid, NULL);
     close(sockfd);
 

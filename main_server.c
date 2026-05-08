@@ -10,6 +10,9 @@
 
 #define PORT_NUM 9004
 #define BUF_SIZE 512
+#define MAX_ROOMS 4
+
+int rooms_in_use = 0;
 
 void error(const char *msg) {
     perror(msg);
@@ -17,21 +20,24 @@ void error(const char *msg) {
 }
 
 // Clients 
-
+// room_no tracks which room, starting from 1
 typedef struct _Client {
     int sockfd;
     char username[64];
     char ip[INET_ADDRSTRLEN];
+    int room_no;
     struct _Client *next;
 } Client;
 
 static Client *client_list = NULL;
 static pthread_mutex_t list_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t room_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static void add_client(int sockfd, const char *username, const char *ip) {
+static void add_client(int sockfd, const char *username, const char *ip, int room_no) {
     Client *c = malloc(sizeof(Client));
     if (!c) error("ERROR malloc Client");
     c->sockfd = sockfd;
+    c->room_no = room_no;
     strncpy(c->username, username, 63); c->username[63] = '\0';
     strncpy(c->ip, ip, INET_ADDRSTRLEN - 1); c->ip[INET_ADDRSTRLEN - 1] = '\0';
     pthread_mutex_lock(&list_mutex);
@@ -61,20 +67,22 @@ static int remove_client(int sockfd, char *out_user, char *out_ip) {
     return 0;
 }
 // broadcasts to every connected client
-static void broadcast_all(const char *msg) {
+// for checkpoint 2 - restrict to only send messages to certain rooms
+static void broadcast_all(const char *msg, int room_no) {
     int len = strlen(msg);
     pthread_mutex_lock(&list_mutex);
     for (Client *c = client_list; c; c = c->next)
-        send(c->sockfd, msg, len, 0);
+        if(c->room_no == room_no)
+            send(c->sockfd, msg, len, 0);
     pthread_mutex_unlock(&list_mutex);
 }
 
 // Send to everyone except but one
-static void broadcast_others(int fromfd, const char *msg) {
+static void broadcast_others(int fromfd, const char *msg, int room_no) {
     int len = strlen(msg);
     pthread_mutex_lock(&list_mutex);
     for (Client *c = client_list; c; c = c->next)
-        if (c->sockfd != fromfd)
+        if (c->sockfd != fromfd && c->room_no == room_no)
             send(c->sockfd, msg, len, 0);
     pthread_mutex_unlock(&list_mutex);
 }
@@ -85,7 +93,7 @@ static void print_client_list(void) {
     printf("── Connected clients ──\n");
     int count = 0;
     for (Client *c = client_list; c; c = c->next) {
-        printf("  %s (%s)\n", c->username, c->ip);
+        printf("  %s (%s) (room: %d)\n", c->username, c->ip, c->room_no);
         count++;
     }
     if (count == 0) printf("  (none)\n");
@@ -96,35 +104,91 @@ static void print_client_list(void) {
 typedef struct {
     int clisockfd;
     char ip[INET_ADDRSTRLEN];
-} ThreadArgs;
+    int room_no;
+}ThreadArgs;
+
+void build_room_menu(char* buffer)
+{
+    int counts[MAX_ROOMS + 1] = {0};
+    
+    pthread_mutex_lock(&list_mutex);
+    Client *curr = client_list;
+    while (curr) {
+        if (curr->room_no <= MAX_ROOMS) {
+            counts[curr->room_no]++;
+        }
+        curr = curr->next;
+    }
+    pthread_mutex_unlock(&list_mutex);
+
+    strcpy(buffer, "Available Rooms:\n");
+    for (int i = 1; i <= rooms_in_use; i++) {
+        char line[64];
+        snprintf(line, sizeof(line), "Room %d: %d users\n", i, counts[i]);
+        strcat(buffer, line);
+    }
+}
 
 static void *thread_main(void *arg) {
+    int room_no;
+
+    ThreadArgs *targs = (ThreadArgs *)arg;
     pthread_detach(pthread_self());
 
     int fd = ((ThreadArgs *)arg)->clisockfd;
     char ip[INET_ADDRSTRLEN];
     strncpy(ip, ((ThreadArgs *)arg)->ip, INET_ADDRSTRLEN - 1);
+
     ip[INET_ADDRSTRLEN - 1] = '\0';
     free(arg);
-
     char buf[BUF_SIZE];
     int n;
 
-// sets first message as username and adds to list, broadcasts join message too
+    char menu[BUF_SIZE];
+    build_room_menu(menu);
+    send(fd, menu, strlen(menu), 0);                                              // send menu
+
     memset(buf, 0, BUF_SIZE);
-    n = recv(fd, buf, BUF_SIZE - 1, 0);
+    n = recv(fd, buf, BUF_SIZE - 1, 0);                                           // recieve room number
+    if (n <= 0) { close(fd); return NULL; }
+
+    char room_choice_temp[16];
+    strncpy(room_choice_temp, buf, 15);
+
+    memset(buf, 0, BUF_SIZE);
+    n = recv(fd, buf, BUF_SIZE - 1, 0);                                           // recieve username
     if (n <= 0) { close(fd); return NULL; }
     buf[strcspn(buf, "\r\n")] = '\0';
-
     char username[64];
     strncpy(username, buf, 63); username[63] = '\0';
 
-    add_client(fd, username, ip);
+    buf[strcspn(buf, "\r\n")] = '\0';
+
+    buf[n] = '\0';
+    int requested_room = atoi(room_choice_temp);
+    if (strncmp(room_choice_temp, "new", 3) == 0) {
+        pthread_mutex_lock(&room_mutex);
+        rooms_in_use++;
+        room_no = rooms_in_use;
+        pthread_mutex_unlock(&room_mutex);
+        printf("Creating room %d for %s...\n", room_no, username);
+    } else {
+        if (requested_room > 0) {
+            room_no = requested_room;
+            printf("%s joining room %d...\n", username, room_no);
+        }    else {
+            fprintf(stderr, "Client %s sent invalid room format: '%s'\n", username, buf);
+            close(fd);
+            return NULL;
+        }
+    }
+
+    add_client(fd, username, ip, room_no);
     print_client_list();
 
     char notice[BUF_SIZE + 128];
-    snprintf(notice, sizeof(notice), "%s (%s) joined the chat room!\n", username, ip);
-    broadcast_all(notice);
+    snprintf(notice, sizeof(notice), "%s (%s) joined chat room %d!\n", username, ip, room_no);
+    broadcast_all(notice, room_no);
 
 // chat loop here
     while (1) {
@@ -132,11 +196,11 @@ static void *thread_main(void *arg) {
         n = recv(fd, buf, BUF_SIZE - 1, 0);
         if (n <= 0) break;
         buf[strcspn(buf, "\r\n")] = '\0';
-        if (strlen(buf) == 0) break;
+        if (strlen(buf) == 0) continue;
 
         char msg[BUF_SIZE + 128];
         snprintf(msg, sizeof(msg), "[%s (%s)] %s\n", username, ip, buf);
-        broadcast_others(fd, msg);
+        broadcast_others(fd, msg, room_no);
     }
 
 // disconnet message 
@@ -144,7 +208,7 @@ static void *thread_main(void *arg) {
     remove_client(fd, rm_user, rm_ip);
 
     snprintf(notice, sizeof(notice), "%s (%s) left the room!\n", rm_user, rm_ip);
-    broadcast_all(notice);
+    broadcast_all(notice, room_no);
     print_client_list();
 
     close(fd);

@@ -10,6 +10,7 @@
 
 #define PORT_NUM 9004
 #define BUF_SIZE 512
+#define MAX_ROOMS 4
 
 void error(const char *msg) {
     perror(msg);
@@ -47,7 +48,7 @@ static int get_color(const char *username) {
     return color;
 }
 
-typedef struct { int sockfd; } ThreadArgs;
+typedef struct { int sockfd; int room_no; } ThreadArgs;
 
 // receives: display incoming messages, color chat messages
 static void *thread_main_recv(void *arg) {
@@ -111,10 +112,13 @@ static void *thread_main_send(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) error("Usage: ./main_client IP-address");
+    char room_str[16];
+    
+    if (argc > 3) error("Too many arguments.\nUsage: ./main_client IP-address room number or 'new'");
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) error("ERROR opening socket");
+
 
     struct sockaddr_in serv_addr;
     memset(&serv_addr, 0, sizeof(serv_addr));
@@ -122,19 +126,63 @@ int main(int argc, char *argv[]) {
     serv_addr.sin_addr.s_addr = inet_addr(argv[1]);
     serv_addr.sin_port        = htons(PORT_NUM);
 
-    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) // connect to server
         error("ERROR connecting");
 
-// get and send username
+    int room_to_send = 0;
+
+    if(argc < 3){ // if a room number or 'new' is not given
+        char menu_buffer[BUF_SIZE];
+        memset(menu_buffer, 0, BUF_SIZE);
+        int n = recv(sockfd, menu_buffer, BUF_SIZE - 1, 0);                    // recieve menu
+    
+        if (n <= 0) error("Server closed connection.");
+    
+        printf("Server says following options are available:\n%s\n", menu_buffer);
+        printf("\033[1mChoose the room number or type 'new': \033[0m");
+        fflush(stdout);
+
+        char choice[16];
+        fgets(choice, sizeof(choice), stdin);
+        choice[strcspn(choice, "\n")] = '\0'; // Remove newline
+
+        strncpy(room_str, choice, 15);
+    }else{
+        char junk[BUF_SIZE];
+        recv(sockfd, junk, BUF_SIZE - 1, 0);                                   // recieve menu
+        strncpy(room_str, argv[2], 15);
+    }
+
+
+    if (strcmp(room_str, "new") == 0) {            // find room number                             
+        room_to_send = 0; 
+    } else {
+        if (room_str[0] >= '0' && room_str[0] <= '9') { // checks if value entered is an integer
+            room_to_send = atoi(room_str);
+            if (room_to_send < 0 || room_to_send > MAX_ROOMS) { // Set your own max
+                fprintf(stderr, "Error: Room number must be between 0 and MAX_ROOMS\n");
+                exit(1);
+            }
+        } else {
+            fprintf(stderr, "Error: Argument must be a number or 'new'\n");
+            exit(1);
+        }
+    }
+
+
+    if (send(sockfd, room_str, strlen(room_str), 0) < 0)       // send room number
+        error("Error sending room choice");
+
+    usleep(10000);
+    // get and send username
     char username[64];
     printf("Type your user name: ");
-    fflush(stdout);
+    fflush(stdout); 
     if (fgets(username, sizeof(username), stdin) == NULL) error("ERROR reading username");
     username[strcspn(username, "\r\n")] = '\0';
 
-    if (send(sockfd, username, strlen(username), 0) < 0)
+    if (send(sockfd, username, strlen(username), 0) < 0)       // send username
         error("ERROR sending username");
-
 
     ThreadArgs *rargs = malloc(sizeof(ThreadArgs));
     if (!rargs) error("ERROR malloc");
@@ -147,6 +195,7 @@ int main(int argc, char *argv[]) {
     ThreadArgs *sargs = malloc(sizeof(ThreadArgs));
     if (!sargs) error("ERROR malloc");
     sargs->sockfd = sockfd;
+    sargs->room_no = room_to_send;;
     pthread_t stid;
     if (pthread_create(&stid, NULL, thread_main_send, sargs) != 0)
         error("ERROR creating send thread");
